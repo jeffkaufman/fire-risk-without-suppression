@@ -14,11 +14,11 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import breadth_first_order
 import model, weather, hindcast_chelsea as H
 
-def sizes(G, pool, m, e0, L, scale, wx, rng, nreal=40, nseed=25):
+def sizes(G, pool, day, scale, rose, rng, nreal=40, nseed=25):
     n = len(G["area"]); out = []
     for _ in range(nreal):
-        wf = rng.choice(model.WIND_DIRS, p=wx) + rng.uniform(-22.5, 22.5)
-        p = H.edge_p(G, wf, m, e0, L, scale)
+        wf = rng.choice(model.WIND_DIRS, p=rose) + rng.uniform(-22.5, 22.5)
+        p = H.edge_p(G, wf, day, scale)
         o = rng.random(len(p)) < p
         A = csr_matrix((np.ones(o.sum(), dtype=np.int8), (G["src"][o], G["dst"][o])), shape=(n, n))
         for s in rng.choice(pool, nseed, replace=False):
@@ -31,11 +31,14 @@ if __name__ == "__main__":
     G = H.setup(); district, _ = H.zones(G)
     pool = np.where(district & ~G["noncomb"])[0]
     rose = {k: np.array(v["dirs"]) for k, v in weather.day_types("BOS")["types"].items()}
+    D = {d[0]: d for d in model.DAY_TYPES}
     print("Kobe 1995 (light wind, partial suppression):      P(>1 bldg) 0.51   P(>=600 m2 footprint) 0.29   P(>=20,000 m2) 0.047")
-    print(f"\nChelsea district (nearest-gap median 2.4 m): {len(pool)} candidate ignition buildings")
-    for nm, dt, m, e0, L, sc in [("calm/damp as-is (m 0.8)", "calm/damp", 0.8, 0.0, 40, 1.0), ("ordinary as-is (m 0.9)", "ordinary", 0.9, 0.002, 40, 1.0),
-                                 ("ordinary, m 1.0", "ordinary", 1.0, 0.002, 40, 1.0), ("ordinary, m 1.0, spread x1.25", "ordinary", 1.0, 0.002, 40, 1.25),
-                                 ("ordinary, m 1.0, spread x1.5", "ordinary", 1.0, 0.002, 40, 1.5)]:
-        r = sizes(G, pool, m, e0, L, sc, rose[dt], rng)
+    print(f"\nChelsea district: {len(pool)} candidate ignition buildings")
+    for nm, day, sc in [("calm/damp", D["calm/damp"], 1.0), ("ordinary", D["ordinary"], 1.0),
+                        ("ordinary, wind weight 0", ("ordinary", 0.9, 0.0, 0.002, 40), 1.0),
+                        ("ordinary, wind weight 0.3", ("ordinary", 0.9, 0.3, 0.002, 40), 1.0),
+                        ("ordinary, no height adjustment", D["ordinary"], 0.77),
+                        ("ordinary, top of physics range", D["ordinary"], 1.23)]:
+        r = sizes(G, pool, day, sc, rose[day[0]], rng)
         print(f"  {nm:32s} P(>1 bldg) {np.mean(r[:,0] > 1):.2f}   P(>=600 m2) {np.mean(r[:,1] >= 600):.2f}   P(>=20,000 m2) {np.mean(r[:,1] >= 20000):.3f}"
               f"   median/mean/p90 bldgs {np.median(r[:,0]):.0f}/{r[:,0].mean():.1f}/{np.percentile(r[:,0], 90):.0f}", flush=True)

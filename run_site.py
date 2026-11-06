@@ -7,16 +7,22 @@ reach sets for the building at the site's coordinates, and writes data/results_<
 those into burn probabilities.
 
 res["runs"] keys:
-  (spread scale, defense level)        the house alone at that defense level
+  (1.0, defense level)                 the house alone at that defense level
   (1.0, defense level, "block")        every building within block_radius_m at that level too
-  (1.0, "do nothing", "m1")            calm and ordinary days use the LA curve unscaled (m = 1)
-Each value is a list of (day type, W, hit_window_edge, n_buildings) samples.
+  (scale, "do nothing")                50% spread distance scaled: 0.77 = no adjustment for taller houses
+                                       (HOUSE_FACTOR 1.0), 1.23 = the top of the physics range (1.6)
+  (1.0, "do nothing", "wind25"/"wind75") windy-and-dry days with wind weight 0.25 / 0.75 instead of 0.5
+  (1.0, "do nothing", "nolimit")       no travel-time limit on wind-driven days
+  (1.0, "do nothing", "lost")          the LA curve for buildings actually lost (firefighters saved some)
+Each value is a list of (day type, W, hit_window_edge, n_buildings, X) samples; X is the wildland
+exposure (wildland.py), zero unless the site sets "wildland_burn_fraction".
 """
 import json, pickle, sys, zlib
 import numpy as np
-import model, osm, weather
+import model, osm, weather, wildland
 
-NS = {"calm/damp": 1000, "ordinary": 1000, "windy & dry": 1000, "red-flag": 400}   # samples per day type
+NS = 400     # samples per day type
+LOST_CURVE = dict(D50_LA=3.53, K_LA=0.92, AREA_COEF=0.18, HOUSE_FACTOR=1.0)   # calib_fit3.py, outcome "lost"
 
 
 def run(name, cfg):
@@ -25,31 +31,44 @@ def run(name, cfg):
     osm.ensure(name, cfg["lat"], cfg["lon"], radius)
     wx = weather.day_types(cfg["station"])["types"]
     polys, info = model.build(model.load(name), cfg["lat"], cfg["lon"])
-    nb, cents = model.neighbor_lists(polys)
+    G = model.graph(polys, info, cache=f"data/graph_{name}.npz")
     t = model.find_target(polys, info, cfg.get("osm_way"))
-    gaps = nb[t][1]
-    block = set(int(i) for i in np.where(np.hypot(*(cents - cents[t]).T) <= cfg.get("block_radius_m", 100))[0]) - {t}
-    desc = dict(n_buildings=len(polys), target_dist_m=round(float(polys[t].distance(model.Point(0, 0))), 1), area=round(info[t]["area"]), nearest=[round(float(g), 1) for g in np.sort(gaps)[:5]],
-                n10=int((gaps < 10).sum()), n20=int((gaps < 20).sum()), n_block=len(block), window_edge=edge, station=cfg["station"])
+    gaps = G["gap"][G["indptr"][t]:G["indptr"][t + 1]]
+    block = np.hypot(*(G["cents"] - G["cents"][t]).T) <= cfg.get("block_radius_m", 100)
+    block[t] = False
+    desc = dict(n_buildings=len(polys), target_dist_m=round(float(polys[t].distance(model.Point(0, 0))), 1), area=round(info[t]["area"]),
+                nearest=[round(float(g), 1) for g in np.sort(gaps)[:5]], n10=int((gaps < 10).sum()), n20=int((gaps < 20).sum()),
+                n_block=int(block.sum()), n_block_houses=int((block & (G["area"] >= 60)).sum()), window_edge=edge, station=cfg["station"])
+    wild = None; wild_h = None
+    if "wildland_burn_fraction" in cfg:
+        fxy, fpatch, fshare = wildland.patches(name, cfg["lat"], cfg["lon"], radius)
+        patch, pw, fdist = wildland.exposure(G["cents"], fxy, fpatch)
+        wild = (patch, pw)
+        wild_h = wildland.daily_prob(cfg["wildland_burn_fraction"], {k: v["p"] for k, v in wx.items()})
+        desc.update(forest_dist_m=round(float(fdist[t])) if np.isfinite(fdist[t]) else None, n_forest_edge=int((patch >= 0).sum()), forest_share=round(fshare, 2))
     print(name, desc, flush=True)
-    res = {"desc": desc, "area": info[t]["area"], "runs": {}}
-    variants = [((1.0, d), 1.0, d, None, None) for d in model.DEFENSE]
-    variants += [((1.0, d, "block"), 1.0, d, block, None) for d in model.DEFENSE if d != "do nothing"]
-    variants += [((s, "do nothing"), s, "do nothing", None, None) for s in (0.8, 1.25)]
-    variants += [((1.0, "do nothing", "m1"), 1.0, "do nothing", None, 1.0)]
-    for key, scale, dname, blk, mfloor in variants:
-        model.SPREAD_SCALE = scale; model.M_FLOOR = mfloor
+    res = {"desc": desc, "area": info[t]["area"], "runs": {}, "wild_h": wild_h}
+    variants = [((1.0, d), {}, d, None) for d in model.DEFENSE]
+    variants += [((1.0, d, "block"), {}, d, block) for d in model.DEFENSE if d != "do nothing"]
+    variants += [((s, "do nothing"), dict(SPREAD_SCALE=s), "do nothing", None) for s in (0.77, 1.23)]
+    variants += [((1.0, "do nothing", "wind25"), dict(TAIL_W={"windy & dry": 0.25}), "do nothing", None),
+                 ((1.0, "do nothing", "wind75"), dict(TAIL_W={"windy & dry": 0.75}), "do nothing", None),
+                 ((1.0, "do nothing", "nolimit"), dict(EVENT={}), "do nothing", None),
+                 ((1.0, "do nothing", "lost"), LOST_CURVE, "do nothing", None)]
+    for key, overrides, dname, blk in variants:
+        saved = {k: getattr(model, k) for k in overrides}
+        for k, v in overrides.items(): setattr(model, k, v)
         rng = np.random.default_rng(zlib.crc32(repr((name,) + key).encode()))
         recs = []
         for day in model.DAY_TYPES:
             rose = np.array(wx[day[0]]["dirs"])
-            for _ in range(NS[day[0]]):
+            for _ in range(NS):
                 wf = rng.choice(model.WIND_DIRS, p=rose) + rng.uniform(-22.5, 22.5)
-                W, hit, n = model.sample_W(t, nb, info, cents, rng, day, wf, model.DEFENSE[dname], edge, blk)
-                recs.append((day[0], W, hit, n))
+                W, hit, n, X = model.sample_W(t, G, rng, day, wf, model.DEFENSE[dname], edge, blk, wild)
+                recs.append((day[0], W, hit, n, X))
+        for k, v in saved.items(): setattr(model, k, v)
         res["runs"][key] = recs
         print(" ", name, key, "done", flush=True)
-    model.SPREAD_SCALE = 1.0; model.M_FLOOR = None
     pickle.dump(res, open(f"data/results_{name}.pkl", "wb"))
 
 

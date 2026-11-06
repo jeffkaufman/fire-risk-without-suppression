@@ -51,6 +51,40 @@ Prompts to Fable:
   can share publicly on github (and ideally others can run)?  Make sure not to
   include my addresses or coordinates, though city names are fine.
 
+5. I put the code in ~/code/fire-risk-without-suppression and pushed to github.
+
+  I put the writeup in fire-risk-writeup.html and limited it to HTML that is
+    markdown-compatible.
+
+  A few things I noticed:
+
+  * "65 buildings in Somerville, 50 in Medford and 25 in Brattleboro" this
+    sounds off to me; I thought the Somerville house was in a much denser
+    neighborhood than the Medford one, and then again going from Medford to
+    Brattleboro.
+
+  * "Somerville's risk is seasonal, because dry gales at Boston Logan fall
+    almost entirely between November and April. Medford and Brattleboro barely
+    change with season."  This doesn't make sense: Medford is even closer to
+    Logan than Somerville.  Then later on you say "Somerville and Medford use
+    Boston Logan".
+
+  * "What drives each house differs." this also looks wrong; I'd expect a red
+    flag day to also be an issue in Medford, and maybe in Brattleboro.
+
+  * I'm just going by my experience of looking at house fires, but 50% chance
+    of ignition at 4.3m sounds low to me.  A house burning puts out a ton of
+    heat and 4.3m isn't that far.  And I agree that "the fitted curve caps
+    spread at about 75% even for touching buildings" sounds very wrong, since
+    I'd expect that to be ~100%. Can we make an estimate from physics?  Or
+    better sourcing?
+
+  * For Brattleboro, can you model the wildfire component too?
+
+  Can you fix?
+
+  Lynn fire does indeed look to be 1981-11-28
+
 -------------------------------------------------------------------------------
 
 A rough model of how likely a given house is to burn during a regional disaster
@@ -78,32 +112,41 @@ coordinates are not in this repository.
 
 | House | Do nothing | Attentive | Prepared | Whole block attentive | Whole block prepared |
 |---|---|---|---|---|---|
-| Somerville MA (dense two- and three-family streets) | 0.21% | 0.16% | 0.11% | 0.10% | 0.03% |
-| Medford MA (less dense) | 0.07% | 0.05% | 0.03% | 0.03% | 0.01% |
-| Brattleboro VT (small town) | 0.12% | 0.10% | 0.08% | 0.06% | 0.02% |
+| Somerville MA (dense two- and three-family streets) | 1.2% | 1.1% | 0.8% | 0.9% | 0.3% |
+| Medford MA (less dense) | 0.30% | 0.25% | 0.17% | 0.16% | 0.04% |
+| Brattleboro VT (small town) | 0.24% | 0.23% | 0.19% | 0.11% | 0.03% |
 
-The uncertainty is large. For Somerville, plausible ranges of the ignition rate
-or of spread distances each span roughly 0.07% to 0.9%, the choice of which
-windy days count as dry enough spans 0.14% to 1.6%, and a March outage is about
-eight times riskier than a summer one.
+The uncertainty is large. For Somerville, the plausible range of the ignition
+rate spans 0.4% to 3.7%, the adjustment for taller houses spans 0.5% to 1.9%,
+the choice of which windy days count as dry enough spans 0.9% to 6.5%, and a
+March outage is about ten times riskier than a summer one. If firefighters
+saved as many exposed houses as they did in Los Angeles in 2025, the Somerville
+figure would be 0.17%.
 
 ## How it works
 
 - **Buildings are nodes.** Footprints come from OpenStreetMap, within 2.5 km of
   the house by default.
-- **Radiant spread** between buildings is a logistic function of the gap
-  between them, fitted to building-level damage data from the 2025 Eaton and
-  Palisades fires: a 50% chance of spread at about 4.3 m, falling to about 2%
-  at 20 m.
-- **Embers** carry fire downwind up to 250 m. Their strength is not fitted; on
-  the windiest day type it is set so that the model reproduces the 1908 Chelsea
-  MA conflagration on today's street layout.
+- **Short-range spread** between buildings falls off with the gap between them.
+  The curve is fitted to building-level damage data from the 2025 Eaton and
+  Palisades fires, counting any damage as ignition because nobody would be
+  there to stop it, then stretched 1.3x for taller New England houses on the
+  strength of a radiant-heat calculation. From a typical house on a windy day:
+  95% at half a metre, 64% at 4.3 m, 35% at 10 m, 11% at 20 m. Without strong
+  wind the curve is cut off beyond about 15 m.
+- **Embers** carry fire downwind up to 250 m. Their strength is not fitted.
 - **Weather** comes from 20 years of hourly airport observations, sorted into
   four day types by wind, humidity and recent rain. At Boston Logan the
-  dangerous "red-flag" type is 0.32% of days.
+  dangerous "red-flag" type is 0.32% of days and "windy & dry" is 2.3%.
+- **Travel time.** On those two wind-driven day types, a fire can only reach
+  the house from as far as it could travel during the wind event: 480 m/h
+  downwind on red-flag days (the 1908 Chelsea fire), 180 m/h on windy ones.
 - **Ignitions** that grow to involve a whole building occur at 6e-6 per 100 m²
   of footprint per day, roughly today's rate of reported home fires that are
   not confined to their origin.
+- **Wildland fire** (optional, lower 48 states) can ignite buildings within
+  30 m of forest, using national land-cover data and a regional burn rate you
+  supply. For the Brattleboro house it adds nothing measurable.
 - **The simulation** samples, for each day type, the set of buildings whose
   fire would reach the house, then combines that with the ignition rate and the
   day-type frequencies.
@@ -118,7 +161,7 @@ Python 3.10 or later (developed on 3.15).
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 cp sites.example.json sites.json      # then edit: your coordinates and nearest airport station
-python run_site.py example            # a minute or two, including the downloads
+python run_site.py example            # a few minutes, including the downloads
 python report.py example
 ```
 
@@ -139,21 +182,25 @@ python report.py example
   example `BOS`. `python weather.py BOS` prints that station's day-type
   frequencies.
 - `radius_m`: the footprint window. If `report.py` shows red-flag reach sets
-  often hitting the window edge, increase it (5000 was needed for the
-  Somerville house).
+  often hitting the window edge, increase it (5000 was used for the Somerville
+  and Medford houses).
+- `wildland_burn_fraction` (optional): the share of your region's forest that
+  burns in a year with today's suppression, which switches on the wildland
+  term. Vermont's is about 3.5e-5. See `wildland.py` for the assumptions.
 
 `sites.json` and `data/` are in `.gitignore`, so your address is not committed.
 
 The spread curve was calibrated on Los Angeles and checked only against dense
-New England streets. Elsewhere, treat the output as even rougher, and note the
-model has no wildland fire component.
+New England streets. Elsewhere, treat the output as even rougher.
 
 ## Reproducing the calibration and checks
 
 | Script | What it does |
 |---|---|
-| `fetch_la.py`, `calib_prep.py`, `calib_fit2.py` | Download the LA footprint and damage data and fit the radiant curve (with a block bootstrap). `calib_fit.py` is the earlier fit that tests for a downwind shift and finds none. |
-| `calib_recovery.py` | Simulates fires with known parameters on the LA footprints and checks that the fit recovers them. |
+| `fetch_la.py`, `fetch_dins.py`, `calib_join.py`, `calib_fit3.py` | Download the LA footprints and CAL FIRE inspection data, join them, and fit the short-range spread curve for two outcomes (lost, any damage) and three curve shapes, with a block bootstrap. This is the fit the model uses. |
+| `radiant_physics.py` | Radiant-heat estimate of ignition against gap for one-storey LA houses and 2.5-storey New England houses. Source of the 1.3x adjustment. |
+| `calib_prep.py`, `calib_fit2.py`, `calib_fit.py` | The earlier fits (buildings lost, logistic curve), kept because they test for a downwind shift and a height effect and find neither. |
+| `calib_recovery.py` | Simulates fires with known parameters on the LA footprints and checks that the fitting method recovers them. |
 | `calib_ember.py` | Attempt to fit the ember kernel on LA. It fits worse than a regional background term, so the ember parameters stay unfitted. |
 | `hindcast_sweep.py` | Chelsea 1908 hindcast on the present-day footprint, across day types and spread scales. |
 | `kobe_check.py` | Fire-size distribution on calm and ordinary days against the Kobe 1995 fire-site survey. |
@@ -164,25 +211,32 @@ All of them read and write under `data/` and are run from the repository root.
 
 ## What is fitted and what is judgment
 
-- **Fitted or measured:** the radiant spread curve (LA 2025), day-type
-  frequencies and wind roses (airport observations).
-- **Checked against history but not fitted:** ember strength on red-flag days
-  (Chelsea 1908), the spread multipliers on calm and ordinary days (Kobe 1995),
-  the red-flag wind threshold (Logan on the day of the 1973 Chelsea fire).
-- **Judgment:** ember strength on "windy & dry" days, the rule that rain that
-  day or the day before rules out a dangerous day, the lower ignitability
-  assumed for large and commercial buildings, the defense multipliers, and how
-  much a disaster raises the ignition rate above normal.
+- **Fitted or measured:** the short-range spread curve for one-storey stucco
+  houses in extreme wind (LA 2025), day-type frequencies and wind roses
+  (airport observations), forest cover (NLCD).
+- **Checked against history but not fitted:** spread on red-flag days (Chelsea
+  1908), the red-flag wind threshold (Logan on the day of the 1973 Chelsea
+  fire), downwind spread rates (Chelsea 1908, Kobe 1995).
+- **Judgment:** the 1.3x adjustment for taller wood-sided houses, how much of
+  the curve's far end applies on days with less wind, ember strength, the rule
+  that rain that day or the day before rules out a dangerous day, the lower
+  ignitability assumed for large and commercial buildings, the defense
+  multipliers, how much a disaster raises the ignition rate above normal, and
+  every wildland parameter except the regional burn rate.
 
-Known gaps: no snow cover, no drought term, no wildland fuels, no building
-materials beyond what OpenStreetMap tags, ignition proportional to footprint
-rather than dwelling units, and no explicit time limit on a fire.
+Known gaps: no snow cover, no drought term, no building materials beyond what
+OpenStreetMap tags, ignition proportional to footprint rather than dwelling
+units, and a travel-time limit only on wind-driven days. On ordinary days the
+model spreads fire further than the Kobe 1995 survey found, where brigades
+were still putting out many fires.
 
 ## Data sources
 
 - Building footprints: © OpenStreetMap contributors, [ODbL](https://www.openstreetmap.org/copyright), via the Overpass API.
-- LA calibration data: LA County 2023 building footprints joined to CAL FIRE damage inspections (DINS) for the Eaton and Palisades fires.
+- LA calibration data: LA County 2023 building footprints joined to CAL FIRE damage inspections (DINS) for the Eaton and Palisades fires, plus CAL FIRE's statewide DINS points for siding and defense attributes.
 - Weather: ASOS hourly observations from the [Iowa Environmental Mesonet](https://mesonet.agron.iastate.edu/).
+- Forest cover: USGS National Land Cover Database 2021, via the [MRLC](https://www.mrlc.gov/) map service.
+- Vermont wildfire statistics: Vermont Department of Forests, Parks and Recreation.
 - Kobe 1995: Hokugo, "The Performance of Fire Protection of Buildings against the Fires following the Great Hanshin-Awaji Earthquake", Fire Safety Science 5:947–958 (1997).
 - Chelsea 1908: Pratt, [The Burning of Chelsea](https://www.gutenberg.org/ebooks/78708) (1908).
 

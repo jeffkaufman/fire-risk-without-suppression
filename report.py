@@ -15,13 +15,15 @@ TYPES = [d[0] for d in model.DAY_TYPES]
 DEF = list(model.DEFENSE)
 
 
-def pburn(res, key, q0, T, probs):
+def pburn(res, key, q0, T, probs, wildland=True):
     """probs: {day type: probability}"""
     own = model.DEFENSE[key[1]][3]; a_t = res["area"] / 100; s = 0
+    h = res.get("wild_h") if wildland else None
     for dt, p in probs.items():
         if p == 0: continue
-        W = np.array([w for (d, w, h, n) in res["runs"][key] if d == dt])
-        s += p * np.mean(np.exp(-q0 * W))
+        r = [x for x in res["runs"][key] if x[0] == dt]
+        W = np.array([x[1] for x in r]); X = np.array([x[4] for x in r])
+        s += p * np.mean(np.exp(-q0 * W) * (1 - (h[dt] * X if h else 0)))
     return 1 - (s * (1 - q0 * a_t * own)) ** T
 
 
@@ -47,10 +49,16 @@ def report(name, q0, T):
     print("    house alone:                         " + " / ".join(pc(pburn(res, (1.0, d), q0, T, annual)) for d in DEF))
     print(f"    whole block ({res['desc']['n_block']} buildings) at that level: " +
           " / ".join(pc(pburn(res, (1.0, d) if d == "do nothing" else (1.0, d, "block"), q0, T, annual)) for d in DEF))
+    if res.get("wild_h"):
+        print(f"    without the wildland term:           " + " / ".join(pc(pburn(res, (1.0, d), q0, T, annual, wildland=False)) for d in DEF)
+              + ("   (no forest patch in the window)" if res["desc"]["forest_dist_m"] is None else
+                 f"   (house {res['desc']['forest_dist_m']} m from forest; {res['desc']['n_forest_edge']} buildings at the forest edge)"))
     print("  sensitivity, do nothing:")
-    print("    q0 x1/3 and x3.3:                    " + " / ".join(pc(pburn(res, (1.0, "do nothing"), q, T, annual)) for q in (q0 / 3, q0 * 10 / 3)))
-    print("    spread distances x0.8 and x1.25:     " + " / ".join(pc(pburn(res, (s, "do nothing"), q0, T, annual)) for s in (0.8, 1.25)))
-    print("    calm and ordinary days at m = 1:     " + pc(pburn(res, (1.0, "do nothing", "m1"), q0, T, annual)))
+    print("    ignition rate x1/3 and x3.3:                   " + " / ".join(pc(pburn(res, (1.0, "do nothing"), q, T, annual)) for q in (q0 / 3, q0 * 10 / 3)))
+    print("    no height adjustment / top of physics range:   " + " / ".join(pc(pburn(res, (s, "do nothing"), q0, T, annual)) for s in (0.77, 1.23)))
+    print("    windy-day wind weight 0.25 / 0.75 (central 0.5): " + " / ".join(pc(pburn(res, (1.0, "do nothing", k), q0, T, annual)) for k in ("wind25", "wind75")))
+    print("    no travel-time limit on wind-driven days:       " + pc(pburn(res, (1.0, "do nothing", "nolimit"), q0, T, annual)))
+    print("    LA curve for buildings lost, with firefighting: " + pc(pburn(res, (1.0, "do nothing", "lost"), q0, T, annual)))
     for lab, months in [("March", [3]), ("Dec-Apr", [12, 1, 2, 3, 4]), ("Jun-Sep", [6, 7, 8, 9])]:
         pr = {t: float(np.mean([wx["by_month"][str(m)][i] for m in months])) for i, t in enumerate(TYPES)}
         print(f"    weather of {lab:8s}:                " + " / ".join(pc(pburn(res, (1.0, d), q0, T, pr)) for d in DEF))
